@@ -39,6 +39,7 @@ func (e *AttributeEncoder) Encode(attribute string, value interface{}) error {
 		}
 
 		fmt.Printf("cannot get tag of attribute %s. using string tag", attribute)
+
 		return nil
 	}
 
