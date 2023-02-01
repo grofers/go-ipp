@@ -1,4 +1,4 @@
-module github.com/phin1x/go-ipp
+module github.com/grofers/go-ipp
 
 go 1.13
 

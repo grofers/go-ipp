@@ -361,6 +361,7 @@ const (
 	AttributeJobPrinterStateMessage  = "job-printer-state-message"
 	AttributeJobImpressionsCompleted = "job-impressions-completed"
 	AttributePrintScaling            = "print-scaling"
+	AttributePrinterColorMode       = "print-color-mode"
 )
 
 // Default attributes
@@ -436,5 +437,6 @@ var (
 		AttributeJobPrinterStateMessage:  TagString,
 		AttributeJobImpressionsCompleted: TagInteger,
 		AttributePrintScaling:            TagKeyword,
+		AttributePrinterColorMode:        TagText,
 	}
 )
