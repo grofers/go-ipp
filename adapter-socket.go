@@ -12,22 +12,23 @@ import (
 	"strconv"
 )
 
-var socketNotFoundError = errors.New("unable to locate CUPS socket")
-var certNotFoundError = errors.New("unable to locate CUPS certificate")
+var SocketNotFoundError = errors.New("unable to locate CUPS socket")
+var CertNotFoundError = errors.New("unable to locate CUPS certificate")
 
 var (
 	DefaultSocketSearchPaths = []string{"/var/run/cupsd", "/var/run/cups/cups.sock", "/run/cups/cups.sock"}
 	DefaultCertSearchPaths   = []string{"/etc/cups/certs/0", "/run/cups/certs/0"}
 )
 
-const defaultRequestRetryLimit = 3
+const DefaultRequestRetryLimit = 3
 
 type SocketAdapter struct {
 	host              string
 	useTLS            bool
 	SocketSearchPaths []string
 	CertSearchPaths   []string
-	requestRetryLimit int
+	//RequestRetryLimit is the number of times a request will be retried when receiving an authorized status. This usually happens when a CUPs cert is expired, and a retry will use the newly generated cert. Default 3.
+	RequestRetryLimit int
 }
 
 func NewSocketAdapter(host string, useTLS bool) *SocketAdapter {
@@ -36,22 +37,34 @@ func NewSocketAdapter(host string, useTLS bool) *SocketAdapter {
 		useTLS:            useTLS,
 		SocketSearchPaths: DefaultSocketSearchPaths,
 		CertSearchPaths:   DefaultCertSearchPaths,
-		requestRetryLimit: defaultRequestRetryLimit,
+		RequestRetryLimit: DefaultRequestRetryLimit,
 	}
 }
 
-//DoRequest performs the given IPP request to the given URL, returning the IPP response or an error if one occurred
-func (h *SocketAdapter) SendRequest(url string, r *Request, _ io.Writer) (*Response, error) {
-	for i := 0; i < h.requestRetryLimit; i++ {
+// SendRequest performs the given IPP request to the given URL, returning the IPP response or an error if one occurred.
+// Additional data will be written to an io.Writer if additionalData is not nil
+func (h *SocketAdapter) SendRequest(url string, r *Request, additionalData io.Writer) (*Response, error) {
+	for i := 0; i < h.RequestRetryLimit; i++ {
 		// encode request
 		payload, err := r.Encode()
 		if err != nil {
-			return nil, fmt.Errorf("unable to encode IPP request: %v", err)
+			return nil, fmt.Errorf("unable to encode IPP request: %w", err)
 		}
 
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
+		var body io.Reader
+		size := len(payload)
+
+		if r.File != nil && r.FileSize != -1 {
+			size += r.FileSize
+
+			body = io.MultiReader(bytes.NewBuffer(payload), r.File)
+		} else {
+			body = bytes.NewBuffer(payload)
+		}
+
+		req, err := http.NewRequest("POST", url, body)
 		if err != nil {
-			return nil, fmt.Errorf("unable to create HTTP request: %v", err)
+			return nil, fmt.Errorf("unable to create HTTP request: %w", err)
 		}
 
 		sock, err := h.GetSocket()
@@ -61,11 +74,11 @@ func (h *SocketAdapter) SendRequest(url string, r *Request, _ io.Writer) (*Respo
 
 		// if cert isn't found, do a request to generate it
 		cert, err := h.GetCert()
-		if err != nil && err != certNotFoundError {
+		if err != nil && err != CertNotFoundError {
 			return nil, err
 		}
 
-		req.Header.Set("Content-Length", strconv.Itoa(len(payload)))
+		req.Header.Set("Content-Length", strconv.Itoa(size))
 		req.Header.Set("Content-Type", ContentTypeIPP)
 		req.Header.Set("Authorization", fmt.Sprintf("Local %s", cert))
 
@@ -78,39 +91,42 @@ func (h *SocketAdapter) SendRequest(url string, r *Request, _ io.Writer) (*Respo
 		}
 
 		// send request
-		resp, err := unixClient.Do(req)
+		httpResp, err := unixClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("unable to perform HTTP request: %v", err)
+			return nil, fmt.Errorf("unable to perform HTTP request: %w", err)
 		}
 
-		if resp.StatusCode == http.StatusUnauthorized {
+		if httpResp.StatusCode == http.StatusUnauthorized {
 			// retry with newly generated cert
-			resp.Body.Close()
+			httpResp.Body.Close()
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("server did not return Status OK: %d", resp.StatusCode)
+		if httpResp.StatusCode != http.StatusOK {
+			httpResp.Body.Close()
+			return nil, fmt.Errorf("server did not return Status OK: %d", httpResp.StatusCode)
 		}
 
 		// buffer response to avoid read issues
 		buf := new(bytes.Buffer)
-		if _, err := io.Copy(buf, resp.Body); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("unable to buffer response: %v", err)
+		if httpResp.ContentLength > 0 {
+			buf.Grow(int(httpResp.ContentLength))
+		}
+		if _, err := io.Copy(buf, httpResp.Body); err != nil {
+			httpResp.Body.Close()
+			return nil, fmt.Errorf("unable to buffer response: %w", err)
 		}
 
-		resp.Body.Close()
+		httpResp.Body.Close()
 
 		// decode reply
-		ippResp, err := NewResponseDecoder(bytes.NewReader(buf.Bytes())).Decode(nil)
+		ippResp, err := NewResponseDecoder(buf).Decode(additionalData)
 		if err != nil {
-			return nil, fmt.Errorf("unable to decode IPP response: %v", err)
+			return nil, fmt.Errorf("unable to decode IPP response: %w", err)
 		}
 
 		if err = ippResp.CheckForErrors(); err != nil {
-			return nil, fmt.Errorf("received error IPP response: %v", err)
+			return nil, fmt.Errorf("received error IPP response: %w", err)
 		}
 
 		return ippResp, nil
@@ -119,7 +135,7 @@ func (h *SocketAdapter) SendRequest(url string, r *Request, _ io.Writer) (*Respo
 	return nil, errors.New("request retry limit exceeded")
 }
 
-//GetSocket returns the path to the cupsd socket by searching SocketSearchPaths
+// GetSocket returns the path to the cupsd socket by searching SocketSearchPaths
 func (h *SocketAdapter) GetSocket() (string, error) {
 	for _, path := range h.SocketSearchPaths {
 		fi, err := os.Stat(path)
@@ -129,7 +145,7 @@ func (h *SocketAdapter) GetSocket() (string, error) {
 			} else if os.IsPermission(err) {
 				return "", errors.New("unable to access socket: Access denied")
 			}
-			return "", fmt.Errorf("unable to access socket: %v", err)
+			return "", fmt.Errorf("unable to access socket: %w", err)
 		}
 
 		if fi.Mode()&os.ModeSocket != 0 {
@@ -137,10 +153,10 @@ func (h *SocketAdapter) GetSocket() (string, error) {
 		}
 	}
 
-	return "", socketNotFoundError
+	return "", SocketNotFoundError
 }
 
-//GetCert returns the current CUPs authentication certificate by searching CertSearchPaths
+// GetCert returns the current CUPs authentication certificate by searching CertSearchPaths
 func (h *SocketAdapter) GetCert() (string, error) {
 	for _, path := range h.CertSearchPaths {
 		f, err := os.Open(path)
@@ -150,18 +166,18 @@ func (h *SocketAdapter) GetCert() (string, error) {
 			} else if os.IsPermission(err) {
 				return "", errors.New("unable to access certificate: Access denied")
 			}
-			return "", fmt.Errorf("unable to access certificate: %v", err)
+			return "", fmt.Errorf("unable to access certificate: %w", err)
 		}
 		defer f.Close()
 
 		buf := new(bytes.Buffer)
 		if _, err := io.Copy(buf, f); err != nil {
-			return "", fmt.Errorf("unable to access certificate: %v", err)
+			return "", fmt.Errorf("unable to access certificate: %w", err)
 		}
 		return buf.String(), nil
 	}
 
-	return "", certNotFoundError
+	return "", CertNotFoundError
 }
 
 func (h *SocketAdapter) GetHttpUri(namespace string, object interface{}) string {
@@ -184,5 +200,14 @@ func (h *SocketAdapter) GetHttpUri(namespace string, object interface{}) string 
 }
 
 func (h *SocketAdapter) TestConnection() error {
+	sock, err := h.GetSocket()
+	if err != nil {
+		return err
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return err
+	}
+	conn.Close()
 	return nil
 }

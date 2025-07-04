@@ -58,28 +58,28 @@ func (r *Request) Encode() ([]byte, error) {
 		return nil, err
 	}
 
-	if err := binary.Write(buf, binary.BigEndian, int8(TagOperation)); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, TagOperation); err != nil {
 		return nil, err
 	}
 
-	if err := enc.Encode(AttributeCharset, Charset); err != nil {
-		return nil, err
+	if r.OperationAttributes == nil {
+		r.OperationAttributes = make(map[string]interface{}, 2)
 	}
 
-	if err := enc.Encode(AttributeNaturalLanguage, CharsetLanguage); err != nil {
-		return nil, err
+	if _, found := r.OperationAttributes[AttributeCharset]; !found {
+		r.OperationAttributes[AttributeCharset] = Charset
 	}
 
-	if len(r.OperationAttributes) > 0 {
-		for attr, value := range r.OperationAttributes {
-			if err := enc.Encode(attr, value); err != nil {
-				return nil, err
-			}
-		}
+	if _, found := r.OperationAttributes[AttributeNaturalLanguage]; !found {
+		r.OperationAttributes[AttributeNaturalLanguage] = CharsetLanguage
+	}
+
+	if err := r.encodeOperationAttributes(enc); err != nil {
+		return nil, err
 	}
 
 	if len(r.JobAttributes) > 0 {
-		if err := binary.Write(buf, binary.BigEndian, int8(TagJob)); err != nil {
+		if err := binary.Write(buf, binary.BigEndian, TagJob); err != nil {
 			return nil, err
 		}
 		for attr, value := range r.JobAttributes {
@@ -90,7 +90,7 @@ func (r *Request) Encode() ([]byte, error) {
 	}
 
 	if len(r.PrinterAttributes) > 0 {
-		if err := binary.Write(buf, binary.BigEndian, int8(TagPrinter)); err != nil {
+		if err := binary.Write(buf, binary.BigEndian, TagPrinter); err != nil {
 			return nil, err
 		}
 		for attr, value := range r.PrinterAttributes {
@@ -100,11 +100,37 @@ func (r *Request) Encode() ([]byte, error) {
 		}
 	}
 
-	if err := binary.Write(buf, binary.BigEndian, int8(TagEnd)); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, TagEnd); err != nil {
 		return nil, err
 	}
 
 	return buf.Bytes(), nil
+}
+
+func (r *Request) encodeOperationAttributes(enc *AttributeEncoder) error {
+	ordered := []string{
+		AttributeCharset,
+		AttributeNaturalLanguage,
+		AttributePrinterURI,
+		AttributeJobID,
+	}
+
+	for _, attr := range ordered {
+		if value, ok := r.OperationAttributes[attr]; ok {
+			delete(r.OperationAttributes, attr)
+			if err := enc.Encode(attr, value); err != nil {
+				return err
+			}
+		}
+	}
+
+	for attr, value := range r.OperationAttributes {
+		if err := enc.Encode(attr, value); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // RequestDecoder reads and decodes a request from a stream

@@ -54,7 +54,7 @@ func (c *IPPClient) getClassUri(printer string) string {
 
 // SendRequest sends a request to a remote uri end returns the response
 func (c *IPPClient) SendRequest(url string, req *Request, additionalResponseData io.Writer) (*Response, error) {
-	if _, ok := req.OperationAttributes[AttributeRequestingUserName]; ok == false {
+	if _, ok := req.OperationAttributes[AttributeRequestingUserName]; !ok {
 		req.OperationAttributes[AttributeRequestingUserName] = c.username
 	}
 
@@ -241,7 +241,7 @@ func (c *IPPClient) GetJobAttributes(jobID int, attributes []string) (Attributes
 // GetJobs returns jobs from a printer or class
 func (c *IPPClient) GetJobs(printer, class string, whichJobs string, myJobs bool, firstJobId, limit int, attributes []string) (map[int]Attributes, error) {
 	req := NewRequest(OperationGetJobs, 1)
-	req.OperationAttributes[AttributeWhichJobs] = string(whichJobs)
+	req.OperationAttributes[AttributeWhichJobs] = whichJobs
 	req.OperationAttributes[AttributeMyJobs] = myJobs
 
 	if printer != "" {
